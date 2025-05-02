@@ -1,0 +1,15 @@
+cat
+dog
+apple
+book
+car
+elephant
+giraffe
+computer
+keyboard
+notebook
+encyclopedia
+philosophy
+architecture
+programming
+mathematics
