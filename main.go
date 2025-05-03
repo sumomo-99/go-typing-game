@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	// "strings"
+	"strings"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // Difficulty represents the difficulty level of the game
@@ -49,6 +51,8 @@ type Game struct {
 	Score      int
 	Mistakes   int
 	TimeLimit  time.Duration
+	CharCount int
+	StartTime time.Time
 }
 
 // LoadWords loads words from a file
@@ -67,84 +71,132 @@ func LoadWords(filePath string) ([]string, error) {
 	return words, scanner.Err()
 }
 
-// StartGame starts the typing game
-func StartGame(game *Game) {
-	fmt.Printf("ゲーム開始! 難易度: %s\n", game.Difficulty.Name)
-	fmt.Printf("制限時間: %v秒\n", game.Difficulty.TimeLimit.Seconds())
-	fmt.Println("問題が表示されます。入力してください。")
+// Model represents the TUI state
+type Model struct {
+	state       string
+	difficulties []Difficulty
+	selected    int
+	game        *Game
+	timer       *time.Timer
+	input       string
+	currentWord string
+	index       int
+}
 
-	timer := time.NewTimer(game.Difficulty.TimeLimit)
-	input := bufio.NewScanner(os.Stdin)
+func initialModel() Model {
+	return Model{
+		state:        "menu",
+		difficulties: difficulties,
+		selected:     0,
+	}
+}
 
-	for _, word := range game.Words {
-		fmt.Printf("問題: %s\n", word)
-		fmt.Print("入力: ")
+// Init initializes the program
+func (m Model) Init() tea.Cmd {
+	return nil
+}
 
-		done := make(chan bool)
-		go func() {
-			if input.Scan() {
-				if input.Text() == word {
-					game.Score++
-				} else {
-					game.Mistakes++
+// Update handles messages and updates the model
+func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch m.state {
+		case "menu":
+			switch msg.String() {
+			case "up":
+				if m.selected > 0 {
+					m.selected--
 				}
+			case "down":
+				if m.selected < len(m.difficulties)-1 {
+					m.selected++
+				}
+			case "enter":
+				m.state = "game"
+				words, err := LoadWords("words.txt")
+				if err != nil {
+					m.state = "error"
+					return m, tea.Quit
+				}
+				var filteredWords []string
+				for _, word := range words {
+					if len(word) >= m.difficulties[m.selected].WordLengthMin &&
+						len(word) <= m.difficulties[m.selected].WordLengthMax {
+						filteredWords = append(filteredWords, word)
+					}
+				}
+				m.game = &Game{
+					Difficulty: m.difficulties[m.selected],
+					Words:      filteredWords,
+					TimeLimit:  m.difficulties[m.selected].TimeLimit,
+					StartTime: time.Now(),
+				}
+				m.timer = time.NewTimer(m.game.TimeLimit)
+				m.index = 0
+				m.currentWord = m.game.Words[m.index]
+			case "q":
+				return m, tea.Quit
 			}
-			done <- true
-		}()
-
-		select {
-		case <-timer.C:
-			fmt.Println("\n時間切れ!")
-			return
-		case <-done:
-			continue
+		case "game":
+			switch msg.String() {
+			case "enter":
+				if strings.TrimSpace(m.input) == m.currentWord {
+					m.game.Score++
+				} else {
+					m.game.Mistakes++
+				}
+				m.input = ""
+				m.index++
+				if m.index >= len(m.game.Words) {
+					m.state = "end"
+				} else {
+					m.currentWord = m.game.Words[m.index]
+				}
+			case "q":
+				return m, tea.Quit
+			default:
+				m.input += msg.String()
+				m.game.CharCount += len(msg.String())
+			}
+		case "end":
+			if msg.String() == "q" {
+				return m, tea.Quit
+			}
 		}
 	}
+	return m, nil
+}
 
-	fmt.Println("ゲーム終了!")
-	fmt.Printf("スコア: %d\n", game.Score)
-	fmt.Printf("ミスタイプ数: %d\n", game.Mistakes)
+// View renders the UI
+func (m Model) View() string {
+	switch m.state {
+	case "menu":
+		s := "難易度選択:\n\n"
+		for i, d := range m.difficulties {
+			cursor := " "
+			if m.selected == i {
+				cursor = ">"
+			}
+			s += fmt.Sprintf("%s %s - %s\n", cursor, d.Name, d.Description)
+		}
+		s += "\n上下キーで選択、Enterで決定、qで終了"
+		return s
+	case "game":
+		return fmt.Sprintf("問題: %s\n入力: %s\nスコア: %d ミスタイプ: %d\nqで終了",
+			m.currentWord, m.input, m.game.Score, m.game.Mistakes)
+	case "end":
+		return fmt.Sprintf("ゲーム終了!\nスコア: %d\nミスタイプ: %d\nTPS: %.2f\nqで終了",
+			m.game.Score, m.game.Mistakes, float64(m.game.CharCount)/time.Since(m.game.StartTime).Seconds())
+	case "error":
+		return "エラー: 単語ファイルの読み込みに失敗しました。\nqで終了"
+	}
+	return ""
 }
 
 func main() {
-	// Display difficulty options
-	fmt.Println("難易度選択:")
-	for i, d := range difficulties {
-		fmt.Printf("%d: %s - %s\n", i+1, d.Name, d.Description)
+	p := tea.NewProgram(initialModel())
+	if err := p.Start(); err != nil {
+		fmt.Printf("エラー: %v\n", err)
+		os.Exit(1)
 	}
-
-	// Select difficulty
-	var choice int
-	fmt.Print("難易度を選択してください (1-3): ")
-	fmt.Scan(&choice)
-	if choice < 1 || choice > len(difficulties) {
-		fmt.Println("無効な選択です。終了します。")
-		return
-	}
-	selectedDifficulty := difficulties[choice-1]
-
-	// Load words
-	words, err := LoadWords("words.txt")
-	if err != nil {
-		fmt.Printf("単語ファイルの読み込みに失敗しました: %v\n", err)
-		return
-	}
-	
-	// Filter words based on difficulty
-	var filteredWords []string
-	for _, word := range words {
-		if len(word) >= selectedDifficulty.WordLengthMin && len(word) <= selectedDifficulty.WordLengthMax {
-			filteredWords = append(filteredWords, word)
-		}
-	}
-
-	// Initialize game
-	game := Game{
-		Difficulty: selectedDifficulty,
-		Words:      filteredWords,
-		TimeLimit:  selectedDifficulty.TimeLimit,
-	}
-
-	// Start the game
-	StartGame(&game)
 }
